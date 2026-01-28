@@ -1,2 +1,2 @@
-# neuron.leptics
-neuron leptics. brand new pill. don't be fooled by AI hallucinations.
+# NEURON LEPTICS
+The CLI tool for detecting AI hallucinations written in Rust and Python
