@@ -18,12 +18,12 @@ type PythonClient struct {
 }
 
 // ExtractSaveResponse - ответ от /extract-and-save
-//type ExtractSaveResponse struct {
-//	Success     bool     `json:"success"`
-//	Filename    string   `json:"filename"`
-//	ClaimsCount int      `json:"claims_count"`
-//	Claims      []string `json:"claims"`
-//}
+type ExtractSaveResponse struct {
+	Success     bool     `json:"success"`
+	Filename    string   `json:"filename"`
+	ClaimsCount int      `json:"claims_count"`
+	Claims      []string `json:"claims"`
+}
 
 // NewPythonClient создает новый клиент
 func NewPythonClient(baseURL string) *PythonClient {
