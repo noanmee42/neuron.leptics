@@ -82,9 +82,28 @@ var buildIndexCmd = &cobra.Command{
 	},
 }
 
-func main() {
+var healthCmd = &cobra.Command{
+	Use:   "health",
+	Short: "Check Python API status",
+	Run: func(cmd *cobra.Command, args []string) {
+		client := NewPythonClient("http://localhost:8000")
+
+		fmt.Println("🔍 Проверка Python API...")
+
+		if err := client.HealthCheck(); err != nil {
+			fmt.Printf("❌ Python API недоступен: %v\n", err)
+			fmt.Println("\n💡 Запустите Python сервер:")
+			fmt.Println("   cd Python && python app.py")
+			os.Exit(1)
+		}
+
+		fmt.Println("✅ Python API работает!")
+	},
+}
+
+func cli() {
 	// Добавляем команды
-	rootCmd.AddCommand(verifyCmd, batchCmd, evaluateCmd, buildIndexCmd)
+	rootCmd.AddCommand(verifyCmd, batchCmd, evaluateCmd, buildIndexCmd, healthCmd) // <- добавили healthCmd
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
