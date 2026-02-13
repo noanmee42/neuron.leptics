@@ -164,23 +164,22 @@ var (
 
 var checkCmd = &cobra.Command{
 	Use:   "check",
-	Short: "Check extracted claims via Google Fact Check API",
+	Short: "Check extracted claims via Jina AI Grounding API", // <- было Google
 	Long: `Reads a JSON file with extracted claims and verifies each one
-using the Google Fact Check API.
-Requires FACTCHECK_API_KEY environment variable or -k flag.`,
+using the Jina AI Grounding API.
+Requires JINA_API_KEY environment variable or -k flag.`, // <- было Google
 	Run: func(cmd *cobra.Command, args []string) {
 		// 1. Получаем API ключ: сначала флаг, потом env
 		apiKey := keyFlag
 		if apiKey == "" {
-			apiKey = os.Getenv("FACTCHECK_API_KEY")
+			apiKey = os.Getenv("JINA_API_KEY") // <- было FACTCHECK_API_KEY
 		}
 		if apiKey == "" {
-			fmt.Println("❌ Google Fact Check API ключ не найден!")
+			fmt.Println("❌ Jina AI API ключ не найден!")
 			fmt.Println("\n💡 Как получить ключ:")
-			fmt.Println("   1. Перейдите на https://console.cloud.google.com/")
-			fmt.Println("   2. Включите 'Fact Check Tools API'")
-			fmt.Println("   3. Создайте API ключ в разделе Credentials")
-			fmt.Println("\n   Затем: set FACTCHECK_API_KEY=ваш_ключ")
+			fmt.Println("   1. Перейдите на https://jina.ai/")
+			fmt.Println("   2. Нажмите 'Get API Key' — бесплатно 1M токенов")
+			fmt.Println("\n   Затем: set JINA_API_KEY=ваш_ключ")
 			os.Exit(1)
 		}
 
@@ -209,7 +208,7 @@ Requires FACTCHECK_API_KEY environment variable or -k flag.`,
 
 		// 4. Проверяем через Google Fact Check API
 		fmt.Println("🔎 Проверка через Google Fact Check API...")
-		api := NewFactCheckAPI(apiKey)
+		api := NewJinaClient(apiKey)
 		results, err := api.CheckClaims(claimsData.Claims)
 		if err != nil {
 			fmt.Printf("❌ Ошибка при проверке: %v\n", err)
@@ -231,20 +230,19 @@ Requires FACTCHECK_API_KEY environment variable or -k flag.`,
 		for i, result := range results {
 			fmt.Printf("\n[%d] %s\n", i+1, result.Claim)
 
-			if result.Found {
-				fmt.Println("    ✅ Найдено в базе Fact Check")
-				if result.TextualRating != "" {
-					fmt.Printf("    📊 Оценка:    %s\n", result.TextualRating)
-				}
-				if result.ReviewPublisher != "" {
-					fmt.Printf("    📰 Источник:  %s\n", result.ReviewPublisher)
-				}
-				if result.ReviewURL != "" {
-					fmt.Printf("    🔗 Ссылка:    %s\n", result.ReviewURL)
-				}
+			if result.Found && result.Result {
+				fmt.Printf("    ✅ ФАКТ ПОДТВЕРЖДЁН (достоверность: %.0f%%)\n", result.Factuality*100)
+			} else if result.Found && !result.Result {
+				fmt.Printf("    ❌ ГАЛЛЮЦИНАЦИЯ (достоверность: %.0f%%)\n", result.Factuality*100)
 			} else {
-				fmt.Println("    ❌ НЕ найдено в базе")
-				fmt.Println("    ⚠️  Возможная галлюцинация!")
+				fmt.Println("    ⚠️  Ошибка при проверке")
+			}
+
+			if result.Reason != "" {
+				fmt.Printf("    💬 Объяснение: %s\n", result.Reason)
+			}
+			if result.ReviewURL != "" {
+				fmt.Printf("    🔗 Источник:   %s\n", result.ReviewURL)
 			}
 		}
 
@@ -269,7 +267,7 @@ Requires FACTCHECK_API_KEY environment variable or -k flag.`,
 
 func init() {
 	checkCmd.Flags().StringVarP(&fileFlag, "file", "f", "", "Путь к JSON файлу с утверждениями (обязательно)")
-	checkCmd.Flags().StringVarP(&keyFlag, "key", "k", "", "Google Fact Check API ключ (или FACTCHECK_API_KEY)")
+	checkCmd.Flags().StringVarP(&keyFlag, "key", "k", "", "Jina AI API ключ (или JINA_API_KEY)") // <- было Google
 	checkCmd.MarkFlagRequired("file")
 }
 
