@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -156,9 +157,125 @@ var healthCmd = &cobra.Command{
 	},
 }
 
+var (
+	fileFlag string
+	keyFlag  string
+)
+
+var checkCmd = &cobra.Command{
+	Use:   "check",
+	Short: "Check extracted claims via Google Fact Check API",
+	Long: `Reads a JSON file with extracted claims and verifies each one
+using the Google Fact Check API.
+Requires FACTCHECK_API_KEY environment variable or -k flag.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// 1. Получаем API ключ: сначала флаг, потом env
+		apiKey := keyFlag
+		if apiKey == "" {
+			apiKey = os.Getenv("FACTCHECK_API_KEY")
+		}
+		if apiKey == "" {
+			fmt.Println("❌ Google Fact Check API ключ не найден!")
+			fmt.Println("\n💡 Как получить ключ:")
+			fmt.Println("   1. Перейдите на https://console.cloud.google.com/")
+			fmt.Println("   2. Включите 'Fact Check Tools API'")
+			fmt.Println("   3. Создайте API ключ в разделе Credentials")
+			fmt.Println("\n   Затем: set FACTCHECK_API_KEY=ваш_ключ")
+			os.Exit(1)
+		}
+
+		// 2. Читаем JSON файл
+		fmt.Printf("📂 Чтение файла: %s\n", fileFlag)
+		data, err := os.ReadFile(fileFlag)
+		if err != nil {
+			fmt.Printf("❌ Не удалось прочитать файл: %v\n", err)
+			fmt.Println("💡 Убедитесь что путь к файлу правильный")
+			os.Exit(1)
+		}
+
+		// 3. Парсим JSON
+		var claimsData ClaimsData
+		if err := json.Unmarshal(data, &claimsData); err != nil {
+			fmt.Printf("❌ Ошибка парсинга JSON: %v\n", err)
+			os.Exit(1)
+		}
+
+		if claimsData.Count == 0 {
+			fmt.Println("⚠️  В файле нет утверждений для проверки")
+			os.Exit(0)
+		}
+
+		fmt.Printf("✅ Загружено %d утверждений\n\n", claimsData.Count)
+
+		// 4. Проверяем через Google Fact Check API
+		fmt.Println("🔎 Проверка через Google Fact Check API...")
+		api := NewFactCheckAPI(apiKey)
+		results, err := api.CheckClaims(claimsData.Claims)
+		if err != nil {
+			fmt.Printf("❌ Ошибка при проверке: %v\n", err)
+			os.Exit(1)
+		}
+
+		// 5. Выводим результаты
+		fmt.Println("\n══════════════════════════════════════════════")
+		fmt.Println("              РЕЗУЛЬТАТЫ ПРОВЕРКИ             ")
+		fmt.Println("══════════════════════════════════════════════")
+
+		if claimsData.Query != "" {
+			fmt.Printf("\n📌 Запрос:   %s\n", claimsData.Query)
+		}
+		fmt.Printf("💬 Ответ:    %s\n", claimsData.Response)
+
+		fmt.Println("\n──────────────────────────────────────────────")
+
+		for i, result := range results {
+			fmt.Printf("\n[%d] %s\n", i+1, result.Claim)
+
+			if result.Found {
+				fmt.Println("    ✅ Найдено в базе Fact Check")
+				if result.TextualRating != "" {
+					fmt.Printf("    📊 Оценка:    %s\n", result.TextualRating)
+				}
+				if result.ReviewPublisher != "" {
+					fmt.Printf("    📰 Источник:  %s\n", result.ReviewPublisher)
+				}
+				if result.ReviewURL != "" {
+					fmt.Printf("    🔗 Ссылка:    %s\n", result.ReviewURL)
+				}
+			} else {
+				fmt.Println("    ❌ НЕ найдено в базе")
+				fmt.Println("    ⚠️  Возможная галлюцинация!")
+			}
+		}
+
+		// 6. Сводка
+		summary := BuildSummary(results)
+
+		fmt.Println("\n══════════════════════════════════════════════")
+		fmt.Println("                    СВОДКА                    ")
+		fmt.Println("══════════════════════════════════════════════")
+		fmt.Printf("📊 Всего утверждений:     %d\n", summary.TotalClaims)
+		fmt.Printf("✅ Найдено в базе:         %d\n", summary.ClaimsFound)
+		fmt.Printf("❌ Не найдено:             %d\n", summary.ClaimsNotFound)
+
+		if summary.TotalClaims > 0 {
+			pct := float64(summary.PotentialHallucinations) / float64(summary.TotalClaims) * 100
+			fmt.Printf("⚠️  Возможных галлюцинаций: %d (%.1f%%)\n", summary.PotentialHallucinations, pct)
+		}
+
+		fmt.Println("══════════════════════════════════════════════")
+	},
+}
+
+func init() {
+	checkCmd.Flags().StringVarP(&fileFlag, "file", "f", "", "Путь к JSON файлу с утверждениями (обязательно)")
+	checkCmd.Flags().StringVarP(&keyFlag, "key", "k", "", "Google Fact Check API ключ (или FACTCHECK_API_KEY)")
+	checkCmd.MarkFlagRequired("file")
+}
+
 func cli() {
 	// Добавляем команды
-	rootCmd.AddCommand(verifyCmd, batchCmd, evaluateCmd, buildIndexCmd, healthCmd) // <- добавили healthCmd
+	rootCmd.AddCommand(verifyCmd, batchCmd, evaluateCmd, buildIndexCmd, healthCmd, checkCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
