@@ -84,12 +84,15 @@ func (j *JinaClient) CheckClaim(claim string) (FactCheckResult, error) {
 	}
 
 	// Если POST вернул 422 — fallback на GET (для английских утверждений)
+	// Если POST вернул 422 — fallback на GET
 	if status == 422 {
-		fmt.Printf("   ⚠️  POST вернул 422, пробуем GET...\n")
+		fmt.Printf("   ⚠️  POST 422, тело: %s\n", string(body))
 		body, status, err = j.checkViaGet(claim)
 		if err != nil {
-			return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка GET запроса: %w", err)
+			fmt.Printf("   ⚠️  GET ошибка: %v\n", err)
+			return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка GET: %w", err)
 		}
+		fmt.Printf("   ⚠️  GET статус: %d, тело: %s\n", status, string(body))
 	}
 
 	if status != http.StatusOK {
