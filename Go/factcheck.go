@@ -8,18 +8,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
 
-// JinaClient - клиент для Jina AI Grounding API
 type JinaClient struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
 }
 
-// NewJinaClient создает новый клиент
 func NewJinaClient(apiKey string) *JinaClient {
 	return &JinaClient{
 		apiKey:  apiKey,
@@ -30,36 +29,71 @@ func NewJinaClient(apiKey string) *JinaClient {
 	}
 }
 
-// CheckClaim проверяет одно утверждение через Jina Grounding API
-func (j *JinaClient) CheckClaim(claim string) (FactCheckResult, error) {
-	// Jina Grounding API: GET запрос с утверждением в URL
-	// Формат: https://g.jina.ai/YOUR_STATEMENT
-	requestURL := j.baseURL + claim
-
-	req, err := http.NewRequest("GET", requestURL, nil)
+func (j *JinaClient) checkViaPost(claim string) ([]byte, int, error) {
+	type jinaRequest struct {
+		Statement string `json:"statement"`
+	}
+	jsonData, err := json.Marshal(jinaRequest{Statement: claim})
 	if err != nil {
-		return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка создания запроса: %w", err)
+		return nil, 0, err
 	}
 
+	req, err := http.NewRequest("POST", j.baseURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, 0, err
+	}
 	req.Header.Set("Authorization", "Bearer "+j.apiKey)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Language", "ru-RU, ru")
 
 	resp, err := j.httpClient.Do(req)
 	if err != nil {
-		return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка запроса: %w", err)
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
+	return body, resp.StatusCode, err
+}
+
+func (j *JinaClient) checkViaGet(claim string) ([]byte, int, error) {
+	requestURL := j.baseURL + url.PathEscape(claim)
+
+	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
-		return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка чтения: %w", err)
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+j.apiKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := j.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	return body, resp.StatusCode, err
+}
+
+func (j *JinaClient) CheckClaim(claim string) (FactCheckResult, error) {
+	// Сначала пробуем POST с json.Marshal — корректно передаёт кириллицу
+	body, status, err := j.checkViaPost(claim)
+	if err != nil {
+		return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка POST запроса: %w", err)
 	}
 
-	fmt.Printf("   🐛 статус: %d\n", resp.StatusCode)
+	// Если POST вернул 422 — fallback на GET (для английских утверждений)
+	if status == 422 {
+		fmt.Printf("   ⚠️  POST вернул 422, пробуем GET...\n")
+		body, status, err = j.checkViaGet(claim)
+		if err != nil {
+			return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка GET запроса: %w", err)
+		}
+	}
 
-	if resp.StatusCode != http.StatusOK {
-		return FactCheckResult{Claim: claim}, fmt.Errorf("статус %d: %s", resp.StatusCode, string(body))
+	if status != http.StatusOK {
+		return FactCheckResult{Claim: claim}, fmt.Errorf("статус %d: %s", status, string(body))
 	}
 
 	var jinaResponse struct {
@@ -81,7 +115,6 @@ func (j *JinaClient) CheckClaim(claim string) (FactCheckResult, error) {
 
 	geminiKey := os.Getenv("GEMINI_API_KEY")
 	translatedReason := translateToRussian(jinaResponse.Data.Reason, geminiKey)
-	fmt.Printf("   🐛 GEMINI_KEY пустой: %v\n", geminiKey == "")
 
 	var sourceURL, sourceQuote string
 	for _, ref := range jinaResponse.Data.References {
@@ -108,7 +141,6 @@ func (j *JinaClient) CheckClaim(claim string) (FactCheckResult, error) {
 	}, nil
 }
 
-// CheckClaims проверяет список утверждений
 func (j *JinaClient) CheckClaims(claims []string) ([]FactCheckResult, error) {
 	results := make([]FactCheckResult, 0, len(claims))
 
@@ -118,10 +150,7 @@ func (j *JinaClient) CheckClaims(claims []string) ([]FactCheckResult, error) {
 		result, err := j.CheckClaim(claim)
 		if err != nil {
 			fmt.Printf("   ⚠️  Ошибка: %v\n", err)
-			results = append(results, FactCheckResult{
-				Claim: claim,
-				Found: false,
-			})
+			results = append(results, FactCheckResult{Claim: claim, Found: false})
 		} else {
 			results = append(results, result)
 		}
@@ -134,11 +163,8 @@ func (j *JinaClient) CheckClaims(claims []string) ([]FactCheckResult, error) {
 	return results, nil
 }
 
-// BuildSummary считает сводку по результатам
 func BuildSummary(results []FactCheckResult) ResultSummary {
-	summary := ResultSummary{
-		TotalClaims: len(results),
-	}
+	summary := ResultSummary{TotalClaims: len(results)}
 
 	for _, r := range results {
 		if r.Found && r.Result {
@@ -175,13 +201,11 @@ func translateToRussian(text string, geminiKey string) string {
 	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=" + geminiKey
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
-		fmt.Printf("   🐛 GEMINI ошибка запроса: %v\n", err) // <- добавь
 		return text
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	fmt.Printf("   🐛 GEMINI ответ: %s\n", string(body)) // <- добавь
 
 	var result struct {
 		Candidates []struct {
