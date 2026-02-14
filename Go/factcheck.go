@@ -3,11 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"os"
 	"time"
 )
 
@@ -31,15 +32,18 @@ func NewJinaClient(apiKey string) *JinaClient {
 
 // CheckClaim проверяет одно утверждение через Jina Grounding API
 func (j *JinaClient) CheckClaim(claim string) (FactCheckResult, error) {
-	payload := fmt.Sprintf(`{"statement": %q, "lang": "ru"}`, claim)
-	req, err := http.NewRequest("POST", j.baseURL, strings.NewReader(payload))
+	// Jina Grounding API: GET запрос с утверждением в URL
+	// Формат: https://g.jina.ai/YOUR_STATEMENT
+	requestURL := j.baseURL + claim
+
+	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
 		return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка создания запроса: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+j.apiKey)
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Language", "ru-RU, ru")
 
 	resp, err := j.httpClient.Do(req)
 	if err != nil {
@@ -47,24 +51,19 @@ func (j *JinaClient) CheckClaim(claim string) (FactCheckResult, error) {
 	}
 	defer resp.Body.Close()
 
-	// Читаем тело ОДИН РАЗ сразу — до любых проверок статуса
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка чтения ответа: %w", err)
+		return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка чтения: %w", err)
 	}
 
-	// Временный дебаг — показываем сырой ответ
-	fmt.Printf("   🐛 RAW ответ Jina: %s\n", string(body))
+	fmt.Printf("   🐛 статус: %d\n", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
-		return FactCheckResult{Claim: claim}, fmt.Errorf("Jina API вернул статус %d: %s", resp.StatusCode, string(body))
+		return FactCheckResult{Claim: claim}, fmt.Errorf("статус %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Парсинг ответа Jina
 	var jinaResponse struct {
-		Code   int `json:"code"`
-		Status int `json:"status"`
-		Data   struct {
+		Data struct {
 			Factuality float64 `json:"factuality"`
 			Result     bool    `json:"result"`
 			Reason     string  `json:"reason"`
@@ -80,13 +79,21 @@ func (j *JinaClient) CheckClaim(claim string) (FactCheckResult, error) {
 		return FactCheckResult{Claim: claim}, fmt.Errorf("ошибка парсинга: %w", err)
 	}
 
-	// Собираем первую поддерживающую ссылку
-	var supportingURL string
+	geminiKey := os.Getenv("GEMINI_API_KEY")
+	translatedReason := translateToRussian(jinaResponse.Data.Reason, geminiKey)
+	fmt.Printf("   🐛 GEMINI_KEY пустой: %v\n", geminiKey == "")
+
+	var sourceURL, sourceQuote string
 	for _, ref := range jinaResponse.Data.References {
 		if ref.IsSupportive {
-			supportingURL = ref.URL
+			sourceURL = ref.URL
+			sourceQuote = ref.KeyQuote
 			break
 		}
+	}
+	if sourceURL == "" && len(jinaResponse.Data.References) > 0 {
+		sourceURL = jinaResponse.Data.References[0].URL
+		sourceQuote = jinaResponse.Data.References[0].KeyQuote
 	}
 
 	return FactCheckResult{
@@ -94,8 +101,9 @@ func (j *JinaClient) CheckClaim(claim string) (FactCheckResult, error) {
 		Found:      true,
 		Result:     jinaResponse.Data.Result,
 		Factuality: jinaResponse.Data.Factuality,
-		Reason:     jinaResponse.Data.Reason,
-		ReviewURL:  supportingURL,
+		Reason:     translatedReason,
+		ReviewURL:  sourceURL,
+		KeyQuote:   sourceQuote,
 		Confidence: jinaResponse.Data.Factuality,
 	}, nil
 }
@@ -142,4 +150,56 @@ func BuildSummary(results []FactCheckResult) ResultSummary {
 	}
 
 	return summary
+}
+
+func translateToRussian(text string, geminiKey string) string {
+	if text == "" || geminiKey == "" {
+		return text
+	}
+
+	requestBody := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{
+				"parts": []map[string]string{
+					{"text": "Переведи на русский язык, только перевод без пояснений: " + text},
+				},
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return text
+	}
+
+	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=" + geminiKey
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Printf("   🐛 GEMINI ошибка запроса: %v\n", err) // <- добавь
+		return text
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("   🐛 GEMINI ответ: %s\n", string(body)) // <- добавь
+
+	var result struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return text
+	}
+
+	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
+		return result.Candidates[0].Content.Parts[0].Text
+	}
+
+	return text
 }

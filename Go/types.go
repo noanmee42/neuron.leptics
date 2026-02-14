@@ -18,6 +18,7 @@ type FactCheckResult struct {
 	Reason     string  `json:"reason"`
 	ReviewURL  string  `json:"review_url,omitempty"`
 	Confidence float64 `json:"confidence"`
+	KeyQuote   string  `json:"key_quote,omitempty"`
 }
 
 // AnalysisResult - полный результат анализа
